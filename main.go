@@ -13,14 +13,28 @@ import (
 	"time"
 )
 
+var (
+	radioStreamIds = map[string]string{
+		"ouifm":   "2174546520932614531",
+		"latina":  "2174546520932614634",
+		"voltage": "2174546520932614870",
+	}
+)
+
 func main() {
+	for k, v := range radioStreamIds {
+		harvestSource(k, v)
+	}
+}
+
+func harvestSource(name string, sourceId string) {
 	start := time.Now()
 	current := start
 
 	titles := make(map[string]OuiFmTitle)
 
 	timestamp := fmt.Sprintf("%d.%d.%dT%d.%d", start.Year(), start.Month(), start.Day(), start.Hour(), start.Minute())
-	f, err := os.Create(fmt.Sprintf("freeYourMusic.%s.csv", timestamp))
+	f, err := os.Create(fmt.Sprintf("%s.%s.csv", name, timestamp))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,7 +46,7 @@ func main() {
 		u, _ := url.Parse("https://www.ouifm.fr/api/TitleDiffusions")
 		q := u.Query()
 		q.Set("size", "30") // max allowed
-		q.Set("radioStreamId", "2174546520932614531")
+		q.Set("radioStreamId", sourceId)
 		q.Set("date", strconv.FormatInt(current.UnixMilli(), 10))
 		u.RawQuery = q.Encode()
 
