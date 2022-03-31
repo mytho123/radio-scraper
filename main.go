@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -15,15 +16,46 @@ import (
 
 var (
 	radioStreamIds = map[string]string{
-		"ouifm":   "2174546520932614531",
-		"latina":  "2174546520932614634",
-		"voltage": "2174546520932614870",
+		"ouifm":                 "2174546520932614531",
+		"ouifm_rock_inde":       "3134161803443976526",
+		"ouifm_bring_the_noise": "4004502594738215513",
+		"ouifm_reggae":          "3540892623380233022",
+		"ouifm_accoustic":       "3906034555622012146",
+		"latina":                "2174546520932614634",
+		"voltage":               "2174546520932614870",
 	}
 )
 
 func main() {
-	for k, v := range radioStreamIds {
-		harvestSource(k, v)
+	help := flag.Bool("help", false, "Displays this help")
+	flag.Parse()
+
+	if *help || len(flag.Args()) == 0 {
+		const bold = "\033[1m"
+		const reset = "\033[0m"
+
+		os.Stdout = os.Stderr
+		fmt.Println("Usage: rm [OPTION]... [SOURCES]...")
+		fmt.Println("Scraps the given sources to a CSV file")
+		fmt.Println()
+		fmt.Println(bold, "Options", reset)
+		flag.CommandLine.PrintDefaults()
+
+		fmt.Println()
+		fmt.Println(bold, "Available sources", reset)
+		for k := range radioStreamIds {
+			fmt.Println("\t" + k)
+		}
+
+		os.Exit(0)
+	}
+
+	for _, source := range flag.Args() {
+		streamId, ok := radioStreamIds[source]
+		if !ok {
+			log.Fatalf("%s is not a valid source\n", source)
+		}
+		harvestSource(source, streamId)
 	}
 }
 
