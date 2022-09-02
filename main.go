@@ -2,33 +2,26 @@ package main
 
 import (
 	"encoding/csv"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
+	"github.com/mytho123/radio-scraper/sources"
+	"hash/fnv"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
-	"strconv"
 	"time"
 )
 
-var (
-	radioStreamIds = map[string]string{
-		"ouifm":                 "2174546520932614531",
-		"ouifm_rock_inde":       "3134161803443976526",
-		"ouifm_bring_the_noise": "4004502594738215513",
-		"ouifm_reggae":          "3540892623380233022",
-		"ouifm_accoustic":       "3906034555622012146",
-		"latina":                "2174546520932614634",
-		"voltage":               "2174546520932614870",
-	}
-)
+type Aggregator interface {
+	GetSources() []string
+	Scrap(source string, start, end time.Time, results chan<- sources.Track) error
+}
 
 func main() {
 	help := flag.Bool("help", false, "Displays this help")
+	duration := flag.String("d", "168h", "Duration to parse (defaults to 1 week)")
 	flag.Parse()
+
+	allSources := sources.GetSources()
 
 	if *help || len(flag.Args()) == 0 {
 		const bold = "\033[1m"
@@ -43,28 +36,29 @@ func main() {
 
 		fmt.Println()
 		fmt.Println(bold, "Available sources", reset)
-		for k := range radioStreamIds {
-			fmt.Println("\t" + k)
+		for name := range allSources {
+			fmt.Println("\t" + name)
 		}
 
 		os.Exit(0)
 	}
 
+	durationParsed, err := time.ParseDuration(*duration)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	for _, source := range flag.Args() {
-		streamId, ok := radioStreamIds[source]
+		scrap, ok := allSources[source]
 		if !ok {
 			log.Fatalf("%s is not a valid source\n", source)
 		}
-		harvestSource(source, streamId)
+		harvestSource(source, durationParsed, scrap)
 	}
 }
 
-func harvestSource(name string, sourceId string) {
+func harvestSource(name string, duration time.Duration, scrap sources.Scrap) {
 	start := time.Now()
-	current := start
-
-	titles := make(map[string]OuiFmTitle)
-
 	timestamp := fmt.Sprintf("%d.%d.%dT%d.%d", start.Year(), start.Month(), start.Day(), start.Hour(), start.Minute())
 	f, err := os.Create(fmt.Sprintf("%s.%s.csv", name, timestamp))
 	if err != nil {
@@ -72,74 +66,42 @@ func harvestSource(name string, sourceId string) {
 	}
 	defer f.Close()
 
+	results := make(chan sources.Track, 100)
+
+	go func() {
+		now := time.Now()
+		err := scrap(now.Add(-duration), now, results)
+		if err != nil {
+			return
+		}
+	}()
+
 	cw := csv.NewWriter(f)
+	defer cw.Flush()
+	total := 0
+	duplicates := 0
 
-	for start.Sub(current).Hours() < 24*7 {
-		u, _ := url.Parse("https://www.ouifm.fr/api/TitleDiffusions")
-		q := u.Query()
-		q.Set("size", "30") // max allowed
-		q.Set("radioStreamId", sourceId)
-		q.Set("date", strconv.FormatInt(current.UnixMilli(), 10))
-		u.RawQuery = q.Encode()
+	hashes := make(map[uint32]interface{})
 
-		log.Printf("harvesting 30 titles @%v : %s", current, u.String())
-		resp, err := http.DefaultClient.Get(u.String())
+	for track := range results {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(fmt.Sprintf("%s|%s", track.Title, track.Artist)))
+		sum := h.Sum32()
+
+		_, dupl := hashes[sum]
+		if dupl {
+			duplicates++
+			continue
+		}
+		hashes[sum] = nil
+
+		err = cw.Write([]string{track.Title, track.Artist})
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		defer resp.Body.Close()
-
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if resp.StatusCode > 299 {
-			log.Fatalln("error from server", resp.StatusCode, resp.Status, string(b))
-		}
-
-		parsedResponse := OuiFmResponse{}
-
-		err = json.Unmarshal(b, &parsedResponse)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for _, entry := range parsedResponse {
-			titles[entry.ID] = entry.Title
-
-			if entry.Timestamp.Before(current) {
-				current = entry.Timestamp
-			}
-		}
+		total++
 	}
 
-	for _, title := range titles {
-		err = cw.Write([]string{title.Title, title.Artist})
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	fmt.Printf("harvested %d titles\n", len(titles))
-}
-
-type OuiFmResponse []struct {
-	Typename  string     `json:"__typename"`
-	ID        string     `json:"id"`
-	Timestamp time.Time  `json:"timestamp"`
-	MdsID     string     `json:"mdsId"`
-	Title     OuiFmTitle `json:"title"`
-}
-
-type OuiFmTitle struct {
-	Typename  string `json:"__typename"`
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Artist    string `json:"artist"`
-	CoverURL  string `json:"coverUrl"`
-	SpotifyID string `json:"spotifyId"`
-	DeezerID  string `json:"deezerId"`
-	CoverID   string `json:"coverId"`
+	fmt.Printf("harvested %d titles (%d duplicates)\n", total, duplicates)
 }
